@@ -1,0 +1,266 @@
+#! /usr/bin/env python3
+
+####################################################################################################
+
+import argparse
+import math
+
+####################################################################################################
+
+parser = argparse.ArgumentParser(description='Report Laser Cutter Timming.')
+parser.add_argument('gcode_file', metavar='GcodeFile',
+                    help='GCode file')
+
+args = parser.parse_args()
+
+####################################################################################################
+
+class GCodeParser:
+
+    # https://en.wikipedia.org/wiki/G-code
+
+    # A 	Absolute or incremental position of A axis (rotational axis around X axis)
+    #           Positive rotation is defined as a counterclockwise rotation looking from X positive towards X negative.
+    #
+    # B 	Absolute or incremental position of B axis (rotational axis around Y axis)
+    #
+    # C 	Absolute or incremental position of C axis (rotational axis around Z axis)
+    #
+    # D 	Defines diameter or radial offset used for cutter compensation. D is used for depth of cut on lathes.
+    #           It is used for aperture selection and commands on photoplotters.
+    #           G41: left cutter compensation, G42: right cutter compensation
+    #
+    # E 	Precision feedrate for threading on lathes
+    #
+    # F 	Defines feed rate
+    #           Common units are distance per time for mills (inches per minute, IPM, or millimeters per minute, mm/min)
+    #           and distance per revolution for lathes (inches per revolution, IPR, or millimeters per revolution, mm/rev)
+    #
+    # G 	Address for preparatory commands
+    #           G commands often tell the control what kind of motion is wanted (e.g., rapid positioning, linear feed, circular feed, fixed cycle)
+    #           or what offset value to use.
+    #
+    # H 	Defines tool length offset;
+    #           Incremental axis corresponding to C axis (e.g., on a turn-mill)
+    #           G43: Negative tool length compensation, G44: Positive tool length compensation
+    #
+    # I 	Defines arc center in X axis for G02 or G03 arc commands.
+    #           Also used as a parameter within some fixed cycles.
+    #           The arc center is the relative distance from the current position to the arc center,
+    #           not the absolute distance from the work coordinate system (WCS).
+    #
+    # J 	Defines arc center in Y axis for G02 or G03 arc commands.
+    #           Also used as a parameter within some fixed cycles.
+    #           Same corollary info as I above.
+    #
+    # K 	Defines arc center in Z axis for G02 or G03 arc commands.
+    #           Also used as a parameter within some fixed cycles, equal to L address.
+    #           Same corollary info as I above.
+    #
+    # L 	Fixed cycle loop count;
+    #           Specification of what register to edit using G10 Fixed cycle loop count: Defines
+    #           number of repetitions ("loops") of a fixed cycle at each position. Assumed to be 1
+    #           unless programmed with another integer. Sometimes the K address is used instead of
+    #           L. With incremental positioning (G91), a series of equally spaced holes can be
+    #           programmed as a loop rather than as individual positions.
+    #           G10 use: Specification of what register to edit (work offsets, tool radius offsets, tool length offsets, etc.).
+    #
+    # M         Miscellaneous function Action code, auxiliary command; descriptions vary. Many M-codes call
+    #           for machine functions, which is why people often say that the "M" stands for "machine",
+    #           although it was not intended to.
+    #
+    # N 	Line (block) number in program;
+    #           System parameter number to change using G10 Line (block) numbers: Optional, so often
+    #           omitted. Necessary for certain tasks, such as M99 P address (to tell the control
+    #           which block of the program to return to if not the default) or GoTo statements (if
+    #           the control supports those). N numbering need not increment by 1 (for example, it
+    #           can increment by 10, 20, or 1000) and can be used on every block or only in certain
+    #           spots throughout a program.
+    #           System parameter number: G10 allows changing of system parameters under program control.
+    #
+    # O 	Program name
+    #           For example, O4501. For many years it was common for CNC control displays to use
+    #           slashed zero glyphs to ensure effortless distinction of letter "O" from digit
+    #           "0". Today's GUI controls often have a choice of fonts, like a PC does.
+    #
+    # P 	Serves as parameter address for various G and M codes
+    #           With G04, defines dwell time value.
+    #           Also serves as a parameter in some canned cycles, representing dwell times or other variables.
+    #           Also used in the calling and termination of subprograms. (With M98, it specifies
+    #           which subprogram to call; with M99, it specifies which block number of the main
+    #           program to return to.)
+    #
+    # Q 	Peck increment in canned cycles
+    #           For example, G73, G83 (peck drilling cycles)
+    #
+    # R 	Defines size of arc radius, or defines retract height in milling canned cycles
+    #           For radii, not all controls support the R address for G02 and G03, in which case IJK
+    #           vectors are used. For retract height, the "R level", as it's called, is returned to
+    #           if G99 is programmed.
+    #
+    # S 	Defines speed, either spindle speed or surface speed depending on mode
+    #           Data type = integer. In G97 mode (which is usually the default), an integer after S
+    #           is interpreted as a number of rev/min (rpm). In G96 mode (CSS), an integer after S
+    #           is interpreted as surface speed—sfm (G20) or m/min (G21). See also Speeds and
+    #           feeds. On multifunction (turn-mill or mill-turn) machines, which spindle gets the
+    #           input (main spindle or subspindles) is determined by other M codes.
+    #
+    # T 	Tool selection
+    #           To understand how the T address works and how it interacts (or not) with M06, one
+    #           must study the various methods, such as lathe turret programming, ATC fixed tool
+    #           selection, ATC random memory tool selection, the concept of "next tool waiting", and
+    #           empty tools. Programming on any particular machine tool requires knowing which
+    #           method that machine uses.
+    #
+    # U 	Incremental axis corresponding to X axis (typically only lathe group A controls)
+    #           Also defines dwell time on some machines (instead of "P" or "X").
+    #
+    #           In these controls, X and U obviate G90 and G91, respectively. On these lathes, G90
+    #           is instead a fixed cycle address for roughing.
+    #
+    # V 	Incremental axis corresponding to Y axis
+    #           Until the 2000s, the V address was very rarely used, because most lathes that used U
+    #           and W didn't have a Y-axis, so they didn't use V. (Green et al. 1996[7] did not even
+    #           list V in their table of addresses.) That is still often the case, although the
+    #           proliferation of live lathe tooling and turn-mill machining has made V address usage
+    #           less rare than it used to be (Smid 2008 shows an example). See also G18.
+    #
+    # W 	Incremental axis corresponding to Z axis (typically only lathe group A controls)
+    #           In these controls, Z and W obviate G90 and G91, respectively. On these lathes, G90
+    #           is instead a fixed cycle address for roughing.
+    #
+    # X 	Absolute or incremental position of X axis.
+    #           Also defines dwell time on some machines (instead of "P" or "U").
+    #
+    # Y 	Absolute or incremental position of Y axis
+    #
+    # Z 	Absolute or incremental position of Z axis
+    #           The main spindle's axis of rotation often determines which axis of a machine tool is labeled as Z.
+
+    ##############################################
+
+    def parse(self, gcode_path):
+
+        with open(gcode_path) as f:
+            for line in f.readlines():
+                line = line.strip()
+                # line starting with a semi-colon is a comment
+                if line and not line.startswith(';'):
+                    position = line.find(';')
+                    if position != -1:
+                        line = line[:position]
+                    parts = [x for x in line.split(' ') if x]
+                    code, args = parts[0], parts[1:]
+                    letter = code[0]
+                    code_number = int(code[1:])
+                    if not(ord('A') <= ord(letter) <= ord('Z')):
+                        raise ValueError("Invalid line: '{}'".format(line))
+                    handler_name = 'on_' + letter
+                    if hasattr(self, handler_name):
+                        handler = getattr(self, handler_name)
+                        handler(code_number, args)
+
+    ##############################################
+
+    @staticmethod
+    def read_float_parameter(value_str, letter=False):
+
+        value = float(value_str[1:])
+
+        if letter:
+            return value_str[0], value
+        else:
+            return value
+
+####################################################################################################
+
+class LaserWebGCcodeParser(GCodeParser):
+
+    # M103 G4 P1000 ; Air Assit ON
+    # M105          ; Air Assit OFF
+    # G28           ; HOMING
+    # M3            ; TOOL ON
+    # M5            ; TOOL OFF
+    #
+    # ; GCODE START
+    # G21         ; Set units to mm
+    # G90         ; Absolute positioning
+    #
+    # ; GCODE END
+    # G0 X0 Y500 P25000
+    # M2          ; End
+
+    ##############################################
+
+    def __init__(self):
+
+        super().__init__()
+
+        self._laser_on = False
+        self._x = 0
+        self._y = 0
+        self._laser_power = 1. # in [0, 1]
+        self._speed = 0 # mm / min
+
+        self._laser_switch = 0
+        self._length_accumulator = 0
+        self._time_accumulator = 0
+
+    ##############################################
+
+    @property
+    def length_accumulator(self):
+        return self._length_accumulator
+
+    @property
+    def time_accumulator(self):
+        return self._time_accumulator
+
+    @property
+    def laser_switch(self):
+        return self._laser_switch
+
+    ##############################################
+
+    def on_G(self, code_number, args):
+
+        # print('G', code_number, args)
+
+        if code_number == 0:
+            # Rapid positioning
+            self._x, self._y = [self.read_float_parameter(x) for x in args[:2]]
+            print("Move to ({:.3f}, {:.3f})".format(self._x, self._y))
+        elif code_number == 1:
+            # Linear interpolation
+            x, y = [self.read_float_parameter(x) for x in args[:2]]
+            if len(args) == 4:
+                self._laser_power = self.read_float_parameter(args[2])
+                self._speed = self.read_float_parameter(args[3])
+            d = math.sqrt((x-self._x)**2 + (y-self._y)**2)
+            self._x = x
+            self._y = y
+            if self._laser_on:
+                self._length_accumulator += d
+                self._time_accumulator += self._laser_power * d / self._speed
+            print("Move to ({:.3f}, {:.3f}) of {:.3f}".format(self._x, self._y, d))
+
+    ##############################################
+
+    def on_M(self, code_number, args):
+
+        print('M', code_number, args)
+
+        if code_number == 3:
+            self._laser_on = True
+            self._laser_switch += 1
+        elif code_number == 5:
+            self._laser_on = False
+
+####################################################################################################
+
+parser = LaserWebGCcodeParser()
+parser.parse(args.gcode_file)
+print()
+print('Length Accumulator: {:.3f} mm'.format(parser.length_accumulator))
+print('Time Accumulator: {:.3f} mm/min'.format(parser.time_accumulator))
+print('Laser Switch: {}'.format(parser.laser_switch))
